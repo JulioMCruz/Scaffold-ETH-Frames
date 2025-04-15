@@ -8,6 +8,11 @@ declare module "next-auth" {
       fid: number;
     };
   }
+  
+  interface User {
+    id: string;
+    fid: number;
+  }
 }
 
 function getDomainFromUrl(urlString: string | undefined): string {
@@ -26,7 +31,6 @@ function getDomainFromUrl(urlString: string | undefined): string {
 }
 
 export const authOptions: AuthOptions = {
-    // Configure one or more authentication providers
   providers: [
     CredentialsProvider({
       name: "Sign in with Farcaster",
@@ -41,85 +45,100 @@ export const authOptions: AuthOptions = {
           type: "text",
           placeholder: "0x0",
         },
-        // In a production app with a server, these should be fetched from
-        // your Farcaster data indexer rather than have them accepted as part
-        // of credentials.
-        // question: should these natively use the Neynar API?
-        name: {
-          label: "Name",
-          type: "text",
-          placeholder: "0x0",
-        },
-        pfp: {
-          label: "Pfp",
-          type: "text",
-          placeholder: "0x0",
-        },
       },
       async authorize(credentials, req) {
-        const csrfToken = req?.body?.csrfToken;
-        if (!csrfToken) {
-          console.error('CSRF token is missing from request');
+        try {
+          console.log('Authorize called with credentials:', credentials);
+          
+          if (!credentials?.message || !credentials?.signature) {
+            console.error('Missing message or signature');
+            return null;
+          }
+
+          const csrfToken = req?.body?.csrfToken;
+          if (!csrfToken) {
+            console.error('CSRF token is missing from request');
+            return null;
+          }
+
+          const appClient = createAppClient({
+            ethereum: viemConnector(),
+          });
+
+          const domain = getDomainFromUrl(process.env.NEXTAUTH_URL);
+          console.log('Verifying sign-in message with domain:', domain);
+
+          const verifyResponse = await appClient.verifySignInMessage({
+            message: credentials.message,
+            signature: credentials.signature as `0x${string}`,
+            domain,
+            nonce: csrfToken,
+          });
+
+          console.log('Verify response:', verifyResponse);
+          
+          const { success, fid } = verifyResponse;
+
+          if (!success || !fid) {
+            console.error('Verification failed:', verifyResponse);
+            return null;
+          }
+
+          return {
+            id: fid.toString(),
+            fid: fid,
+          };
+        } catch (error) {
+          console.error('Error in authorize:', error);
           return null;
         }
-
-        const appClient = createAppClient({
-          ethereum: viemConnector(),
-        });
-
-        const domain = getDomainFromUrl(process.env.NEXTAUTH_URL);
-
-        const verifyResponse = await appClient.verifySignInMessage({
-          message: credentials?.message as string,
-          signature: credentials?.signature as `0x${string}`,
-          domain,
-          nonce: csrfToken,
-        });
-        const { success, fid } = verifyResponse;
-
-        if (!success) {
-          return null;
-        }
-
-        return {
-          id: fid.toString(),
-        };
       },
     }),
   ],
   callbacks: {
+    jwt: async ({ token, user }) => {
+      if (user) {
+        token.fid = user.fid;
+      }
+      return token;
+    },
     session: async ({ session, token }) => {
       if (session?.user) {
-        session.user.fid = parseInt(token.sub ?? '');
+        session.user.fid = token.fid as number;
       }
       return session;
     },
+  },
+  debug: true, // Enable debug messages
+  pages: {
+    signIn: '/', // Redirect to home page after sign in
+    error: '/', // Redirect to home page on error
   },
   cookies: {
     sessionToken: {
       name: `next-auth.session-token`,
       options: {
         httpOnly: true,
-        sameSite: "none",
+        sameSite: "lax", // Changed from "none" to "lax" for better compatibility
         path: "/",
-        secure: true
+        secure: process.env.NODE_ENV === "production"
       }
     },
     callbackUrl: {
       name: `next-auth.callback-url`,
       options: {
-        sameSite: "none",
+        sameSite: "lax", // Changed from "none" to "lax"
         path: "/",
-        secure: true
+        secure: process.env.NODE_ENV === "production"
       }
     },
     csrfToken: {
       name: `next-auth.csrf-token`,
       options: {
         httpOnly: true,
-        sameSite: "none",
+        sameSite: "lax", // Changed from "none" to "lax"
         path: "/",
-        secure: true
+        secure: process.env.NODE_ENV === "production"
       }
     }
   }
